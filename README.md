@@ -385,7 +385,3 @@ Também teria pensado desde o início em rodar via atalho do GNOME em vez de dae
 Uma coisa que ainda não fiz, mas devia: testar em outra máquina com Xorg pra confirmar que o mesmo atalho personalizado funciona igual lá (acho que sim, mas "acho que sim" não é a mesma coisa que testar).
 
 E a lição mais chata de admitir: da próxima vez eu testo o fluxo de uso completo antes de considerar a feature pronta, não só o resultado técnico isolado. "O arquivo foi criado" e "o arquivo foi criado do jeito que eu realmente uso no dia a dia" são coisas diferentes, e eu só descobri isso alguns dias depois, no meio de um chat, tentando colar um print que não vinha.
-
-## Licença
-
-MIT. Usa, copia, adapta.
