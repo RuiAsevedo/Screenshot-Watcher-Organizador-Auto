@@ -1,4 +1,4 @@
-# Screenshot Watcher
+# # Screenshot Watcher
 
 Um script Python pequeno que resolve um problema que eu tinha todo dia: prints jogados soltos na pasta `Imagens`, sem organização nenhuma, misturados uns com os outros até eu não saber mais o que era o quê nem de quando.
 
@@ -48,10 +48,12 @@ Duas capturas, dois atalhos:
 
 | Atalho | Script | O que faz |
 |---|---|---|
-| `Print Screen` | `screenshot_watcher_wayland.py` | Tela cheia |
-| `Shift + Print Screen` | `screenshot_watcher_area_wayland.py` | Seleção de área |
+| `Print Screen` | `screenshot_watcher_wayland.py` | Tela cheia, salva e copia pro clipboard |
+| `Shift + Print Screen` | `screenshot_watcher_area_wayland.py` | Seleção de área, salva e copia pro clipboard |
 
 O script de área tem um detalhe que eu só adicionei depois de perceber o problema na prática: se a pessoa cancela a seleção (aperta Esc), o `gnome-screenshot` ainda "roda com sucesso" tecnicamente, só que sem gerar arquivo — e isso deixava pastas de dia vazias pra trás. Adicionei uma checagem que remove a pasta se ela ficou vazia depois da tentativa.
+
+(A coluna "copia pro clipboard" é uma atualização posterior — conto a história dela mais abaixo, na seção **Update: o Ctrl+V que sumiu**.)
 
 ## Como instalar (o passo a passo que eu de fato segui)
 
@@ -67,12 +69,13 @@ echo $XDG_SESSION_TYPE
 
 Se voltar `wayland` (padrão do Ubuntu 22.04 com GNOME), segue o guia normal abaixo. Se voltar `x11`, os scripts funcionam do mesmo jeito — a única diferença é que em Xorg você teria a opção adicional de usar `pynput` pra escutar o teclado direto, mas eu não vi motivo pra complicar quando o caminho do atalho nativo já resolve nos dois casos.
 
-### 2. Instalar a dependência de sistema
+### 2. Instalar as dependências de sistema
 
-O único requisito externo é o `gnome-screenshot`. No Ubuntu ele normalmente já vem instalado, mas confirma:
+São duas: `gnome-screenshot`, pra capturar, e `wl-clipboard`, pra copiar o resultado pra área de transferência (essa segunda entrou depois, na atualização que descrevo lá embaixo — mas já deixo aqui pra quem for instalar do zero não precisar voltar duas vezes).
 
 ```bash
 which gnome-screenshot || sudo apt install -y gnome-screenshot
+sudo apt install -y wl-clipboard
 ```
 
 Não precisei instalar nenhum pacote Python. Cheguei a cogitar `Pillow` no começo (pra usar `ImageGrab`), mas descartei — ia adicionar uma dependência externa pra fazer exatamente o que o `gnome-screenshot` já faz de graça e nativamente integrado ao Wayland.
@@ -162,6 +165,217 @@ ls -la ~/Imagens/"Capturas de tela"/$(date +%d-%m-%Y)/
 
 Se os dois arquivos apareceram (`print_HH-MM-SS.png` e `print_area_HH-MM-SS.png`), tá funcionando exatamente como deveria — e sem nenhum processo Python residente rodando em segundo plano esperando por isso.
 
+## Update: o Ctrl+V que sumiu
+
+Usei o script assim por uns dias e só fui perceber o que tinha perdido quando fui colar um print direto num chat de IA, do jeito que sempre fiz, e não colou nada. Tive que parar, abrir o gerenciador de arquivos, procurar a pasta do dia, achar o print certo, arrastar. Justo o tipo de fricção que o projeto inteiro nasceu pra eliminar — só que numa etapa diferente do fluxo.
+
+O atalho padrão do GNOME, aquele que eu substituí, copiava a imagem pro clipboard junto com salvar (ou só copiava, dependendo de qual das duas opções nativas eu tinha usado antes). O `gnome-screenshot -f` que eu chamo no script só salva o arquivo. Ele nunca tocou no clipboard, e eu simplesmente não tinha percebido, porque nos primeiros testes eu só chequei se o arquivo tinha sido criado — não testei o fluxo de colar em outro lugar.
+
+A correção não exigiu trocar de ferramenta, só somar uma etapa depois do `gnome-screenshot` salvar: jogar o conteúdo do PNG recém-criado pro clipboard usando `wl-copy` (do pacote `wl-clipboard`).
+
+```python
+def copiar_para_clipboard(caminho_arquivo: Path) -> None:
+    with open(caminho_arquivo, "rb") as f:
+        subprocess.run(
+            ["wl-copy", "--type", "image/png"],
+            stdin=f,
+            check=True,
+        )
+```
+
+Chamei essa função logo depois de confirmar que o arquivo existe, tanto no script de tela cheia quanto no de área. Simples assim — ler o arquivo que acabei de salvar e mandar pro `wl-copy`.
+
+Dois detalhes que valem registrar, porque eu mesmo não sabia até esbarrar neles:
+
+**O `--type image/png` não é opcional.** Sem isso, dependendo do app onde eu colava, a imagem virava um caminho de arquivo em texto plano em vez da imagem em si. O `wl-copy` precisa saber o mime type pra anunciar corretamente pros outros programas o que tá disponível pra colar.
+
+**O `wl-copy` não é um comando que "roda e acaba".** No Wayland, diferente do X11, não existe um clipboard manager central guardando tudo que foi copiado — quem segura o conteúdo é o próprio processo que copiou, e ele precisa continuar vivo pra responder quando alguém colar. Então o `wl-copy` se destaca do processo pai e continua rodando sozinho em segundo plano depois que meu script termina. No começo isso me deixou com um pé atrás — "ué, mas eu não queria processo nenhum residente" — mas é comportamento esperado da ferramenta, não um vazamento nem nada que eu escrevi errado. Ele fica inerte até alguém colar ou até um novo conteúdo substituir o que tá no clipboard, que aí ele mesmo encerra.
+
+Não escrevi tratamento de erro chique pra esse passo. Se o `wl-copy` não estiver instalado, o script avisa no stderr e segue em frente — o arquivo já foi salvo de qualquer forma, então a pior consequência de falhar aqui é eu ter que abrir a pasta manualmente de novo, exatamente como antes da atualização. Não é motivo pra derrubar o script inteiro com `sys.exit()`.
+
+### Os comandos que rodei pra aplicar a atualização
+
+Segui o mesmo método do primeiro dia: sobrescrevi os dois arquivos direto no terminal com `cat`, em vez de abrir um editor. Já tinha o hábito, e assim eu garanto que o conteúdo que está no meu disco é exatamente o que eu pretendia, sem risco de colar errado num editor gráfico.
+
+Primeiro, o script de tela cheia:
+
+```bash
+cat > ~/scripts/screenshot_watcher/screenshot_watcher_wayland.py << 'EOF'
+#!/usr/bin/env python3
+"""
+Screenshot Watcher (versão Wayland) - tela cheia
+--------------------------------------------------
+Executado sob demanda pelo GNOME Shell via atalho de teclado (Print Screen).
+
+Além de salvar em:
+    ~/Imagens/Capturas de tela/DD-MM-AAAA/print_HH-MM-SS.png
+
+também copia a imagem para a área de transferência, permitindo colar
+diretamente (Ctrl+V) em qualquer aplicativo, sem precisar abrir a pasta.
+"""
+
+import subprocess
+import sys
+from pathlib import Path
+from datetime import datetime
+
+BASE_DIR = Path.home() / "Imagens" / "Capturas de tela"
+
+
+def copiar_para_clipboard(caminho_arquivo: Path) -> None:
+    """Copia o conteúdo do PNG para a área de transferência via wl-copy."""
+    try:
+        with open(caminho_arquivo, "rb") as f:
+            subprocess.run(
+                ["wl-copy", "--type", "image/png"],
+                stdin=f,
+                check=True,
+            )
+    except FileNotFoundError:
+        print("Aviso: 'wl-copy' não instalado. "
+              "Rode: sudo apt install wl-clipboard", file=sys.stderr)
+    except subprocess.CalledProcessError as e:
+        print(f"Aviso: falha ao copiar para a área de transferência: {e}",
+              file=sys.stderr)
+
+
+def capturar_tela() -> None:
+    agora = datetime.now()
+
+    pasta_dia = BASE_DIR / agora.strftime("%d-%m-%Y")
+    pasta_dia.mkdir(parents=True, exist_ok=True)
+
+    nome_arquivo = agora.strftime("print_%H-%M-%S.png")
+    caminho_completo = pasta_dia / nome_arquivo
+
+    try:
+        subprocess.run(
+            ["gnome-screenshot", "-f", str(caminho_completo)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        print("Erro: 'gnome-screenshot' não instalado. "
+              "Rode: sudo apt install gnome-screenshot", file=sys.stderr)
+        sys.exit(1)
+    except subprocess.CalledProcessError as e:
+        print(f"Erro ao capturar tela: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if caminho_completo.exists():
+        copiar_para_clipboard(caminho_completo)
+
+
+if __name__ == "__main__":
+    capturar_tela()
+EOF
+```
+
+Segundo, o script de área selecionada:
+
+```bash
+cat > ~/scripts/screenshot_watcher/screenshot_watcher_area_wayland.py << 'EOF'
+#!/usr/bin/env python3
+"""
+Screenshot Watcher - Captura de área selecionada (versão Wayland)
+--------------------------------------------------------------------
+Disparado sob demanda pelo GNOME Shell (atalho Shift+Print Screen).
+Abre a ferramenta de seleção de área do GNOME, salva o resultado em:
+
+    ~/Imagens/Capturas de tela/DD-MM-AAAA/print_area_HH-MM-SS.png
+
+e copia a imagem para a área de transferência, permitindo colar (Ctrl+V)
+direto em qualquer aplicativo, sem precisar abrir a pasta.
+
+Se o usuário cancelar a seleção (Esc), nenhum arquivo é criado e nada
+é copiado.
+"""
+
+import subprocess
+import sys
+from pathlib import Path
+from datetime import datetime
+
+BASE_DIR = Path.home() / "Imagens" / "Capturas de tela"
+
+
+def copiar_para_clipboard(caminho_arquivo: Path) -> None:
+    """Copia o conteúdo do PNG para a área de transferência via wl-copy."""
+    try:
+        with open(caminho_arquivo, "rb") as f:
+            subprocess.run(
+                ["wl-copy", "--type", "image/png"],
+                stdin=f,
+                check=True,
+            )
+    except FileNotFoundError:
+        print("Aviso: 'wl-copy' não instalado. "
+              "Rode: sudo apt install wl-clipboard", file=sys.stderr)
+    except subprocess.CalledProcessError as e:
+        print(f"Aviso: falha ao copiar para a área de transferência: {e}",
+              file=sys.stderr)
+
+
+def capturar_area() -> None:
+    agora = datetime.now()
+
+    pasta_dia = BASE_DIR / agora.strftime("%d-%m-%Y")
+    pasta_dia.mkdir(parents=True, exist_ok=True)
+
+    nome_arquivo = agora.strftime("print_area_%H-%M-%S.png")
+    caminho_completo = pasta_dia / nome_arquivo
+
+    try:
+        subprocess.run(
+            ["gnome-screenshot", "-a", "-f", str(caminho_completo)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        print("Erro: 'gnome-screenshot' não instalado. "
+              "Rode: sudo apt install gnome-screenshot", file=sys.stderr)
+        sys.exit(1)
+    except subprocess.CalledProcessError as e:
+        print(f"Erro ao capturar área: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if caminho_completo.exists():
+        copiar_para_clipboard(caminho_completo)
+    else:
+        try:
+            pasta_dia.rmdir()
+        except OSError:
+            pass
+
+
+if __name__ == "__main__":
+    capturar_area()
+EOF
+```
+-----------------------------------------------------------------
+Testes:
+```bash
+python3 ~/scripts/screenshot_watcher/screenshot_watcher_wayland.py
+```
+Abre qualquer app (editor de texto, navegador, o que for) e dá Ctrl+V. A imagem deve colar direto, sem precisar abrir a pasta.
+
+Repete o teste com o de área:
+
+```bash
+python3 ~/scripts/screenshot_watcher/screenshot_watcher_area_wayland.py
+```
+
+Seleciona uma região, solta, e testa o Ctrl+V de novo.
+
+
+----------------------------------------------------------------
+
+Reparei numa coisa depois de rodar os dois: como uso `cat > ` (com um `>` só, não `>>`), o conteúdo antigo do arquivo é completamente substituído. Isso é exatamente o que eu queria aqui, mas é o tipo de detalhe que, se eu não tivesse prestado atenção, podia ter me feito perder alguma customização que eu tivesse feito manualmente nos scripts entre uma sessão e outra. Não foi o caso, mas anotei mentalmente pra próxima vez conferir um `diff` antes de sobrescrever, se o arquivo já tiver histórico de edições manuais.
+
+Depois de rodar os dois comandos, não precisei tocar em nada nos atalhos do GNOME — o comando configurado neles (`python3 /caminho/do/script.py`) continua o mesmo, só o conteúdo por trás mudou. Testei igual descrevi acima: rodando cada script direto no terminal primeiro, e só depois confiando no atalho de teclado.
+
 ## O que eu mudaria se fosse fazer de novo
 
 Não gastaria tempo tentando fazer o `pynput` funcionar antes de checar `XDG_SESSION_TYPE`. Isso teria me poupado uns bons minutos de captura silenciosamente não funcionando e eu achando que era erro no meu código.
@@ -169,3 +383,9 @@ Não gastaria tempo tentando fazer o `pynput` funcionar antes de checar `XDG_SES
 Também teria pensado desde o início em rodar via atalho do GNOME em vez de daemon. Não é só mais leve — é mais simples de manter, não tem processo pra reiniciar se travar, não precisa de `systemd`, não precisa de `loginctl enable-linger`. Às vezes a solução "chique" (serviço, systemd, reinício automático) é overengineering pra um problema que o próprio sistema operacional já resolve de graça.
 
 Uma coisa que ainda não fiz, mas devia: testar em outra máquina com Xorg pra confirmar que o mesmo atalho personalizado funciona igual lá (acho que sim, mas "acho que sim" não é a mesma coisa que testar).
+
+E a lição mais chata de admitir: da próxima vez eu testo o fluxo de uso completo antes de considerar a feature pronta, não só o resultado técnico isolado. "O arquivo foi criado" e "o arquivo foi criado do jeito que eu realmente uso no dia a dia" são coisas diferentes, e eu só descobri isso alguns dias depois, no meio de um chat, tentando colar um print que não vinha.
+
+## Licença
+
+MIT. Usa, copia, adapta.
